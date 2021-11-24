@@ -1,11 +1,13 @@
-import pool from "../database/db/db";
-import express, { Request, Response, NextFunction } from "express";
+import { Request, Response, NextFunction } from "express";
 import {
   comparePassword,
   generateToken,
   hashPassword,
 } from "../helper/helperUtils";
 import { ValidateLogin, ValidateRegister } from "../helper/validator";
+import { CREATED_CODE } from "../constants/statusCodes";
+import userQueries from "../service/authService";
+import Errors from "../helper/error";
 
 export const AuthSignUp = async (
   req: Request,
@@ -15,46 +17,35 @@ export const AuthSignUp = async (
   try {
     const validate = await ValidateRegister.validateAsync(req.body);
     const hashedPassword = await hashPassword(validate.password);
-    const data = {
-      first_name: validate.first_name,
-      last_name: validate.last_name,
-      email: validate.email,
-      password: hashedPassword,
-      phoneNumber: validate.phoneNumber,
-      address: validate.address,
-    };
-    // check if email exists
-    const user = await pool.query("SELECT email FROM users WHERE email=$1", [
+
+    const values = [
+      validate.first_name,
+      validate.last_name,
       validate.email,
-    ]);
-    if (user.rows.length === 0) {
-      const signupUser = await pool.query(
-        "INSERT INTO users (first_name, last_name, email, address, password, phoneNumber) VALUES ($1, $2, $3, $4, $5, $6)",
-        [
-          validate.first_name,
-          validate.last_name,
-          validate.email,
-          validate.address,
-          hashedPassword,
-          validate.phoneNumber,
-        ]
-      );
-      return res.status(201).json({
-        status: "success",
-        data,
+      hashedPassword,
+      validate.phoneNumber,
+      validate.address,
+    ];
+
+    const result: any = await userQueries.create(values);
+
+    if (result.error) {
+      res.status(result.error.status).json({
+        status: result.error.status,
+        error: result.error.message,
+        db_Error: result.error.error,
       });
+      return;
     }
-    return res.status(409).send({
-      status: "error",
-      error: "Existing user",
+
+    return res.status(CREATED_CODE).json({
+      status: CREATED_CODE,
+      message: "Account successfully created",
+      data: req.body,
     });
   } catch (error: any) {
-    console.log(error);
     if (error.isJoi) {
-      return res.status(400).send({
-        status: "error",
-        message: error.details[0].message,
-      });
+      return Errors.joiErrorResponse(res, error);
     }
     next(error);
   }
@@ -67,14 +58,22 @@ export const AuthSignIn = async (
 ) => {
   try {
     const validate = await ValidateLogin.validateAsync(req.body);
-    const user = await pool.query("SELECT * FROM users WHERE email=$1", [
-      validate.email,
-    ]);
-    if (user.rows.length === 0) {
-      return res.status(400).send({
-        status: "error",
-        message: "Invalid credentials",
+    const values = [validate.email];
+    const result: any = await userQueries.login(values);
+
+    if (result.error) {
+      res.status(403).json({
+        status: 403,
+        error: result.error.message,
       });
+      return;
+    }
+    if (!result.rows.length) {
+      res.status(404).json({
+        status: 404,
+        error: "The user does not exist",
+      });
+      return;
     }
     const {
       id,
@@ -85,7 +84,7 @@ export const AuthSignIn = async (
       phonenumber,
       isadmin,
       password,
-    } = user.rows[0];
+    } = result.rows[0];
     if (!(await comparePassword(validate.password, password))) {
       return res.status(400).send({
         status: 400,
@@ -101,7 +100,7 @@ export const AuthSignIn = async (
       phonenumber,
       isadmin,
     });
-    const data = { token, ...user.rows[0] };
+    const data = { token, ...result.rows[0] };
     return res.status(200).json({
       status: "success",
       data,

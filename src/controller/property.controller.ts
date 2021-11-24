@@ -1,6 +1,12 @@
 import express, { Request, Response, NextFunction } from "express";
+import {
+  CREATED_CODE,
+  FORBIDDEN_CODE,
+  SUCCESS_CODE,
+} from "../constants/statusCodes";
 import pool from "../database/db/db";
 import { ValidatePropertyAd } from "../helper/validator";
+import propertyQueries from "../service/propertyService";
 import cloudinary from "../utils/cloudinary";
 
 export const propertyAd = async (
@@ -12,35 +18,31 @@ export const propertyAd = async (
     const { id: owner } = await req.user;
 
     const validate = await ValidatePropertyAd.validateAsync(req.body);
-    const result = await cloudinary.uploader.upload(req.file?.path);
-    const data = {
+    const image = await cloudinary.uploader.upload(req.file?.path);
+
+    const values = [
       owner,
-      status: validate.status,
-      price: validate.price,
-      state: validate.state,
-      city: validate.city,
-      address: validate.address,
-      type: validate.type,
-      image_url: result.url,
-    };
+      validate.status,
+      validate.price,
+      validate.state,
+      validate.city,
+      validate.address,
+      validate.type,
+      image.url,
+    ];
 
-    const postAdvert = await pool.query(
-      "INSERT INTO property (owner, status, price, state, city, address, type, image_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-      [
-        owner,
-        validate.status,
-        validate.price,
-        validate.state,
-        validate.city,
-        validate.address,
-        validate.type,
-        result.url,
-      ]
-    );
+    const result: { [key: string]: any } = await propertyQueries.create(values);
 
-    return res.status(201).json({
-      status: "success",
-      data,
+    if (result.error) {
+      return res.status(result.error.status).json({
+        status: result.error.status,
+        error: result.error.message,
+      });
+    }
+    return res.status(CREATED_CODE).json({
+      status: CREATED_CODE,
+      message: "Property posted",
+      data: result.rows[0],
     });
   } catch (error: any) {
     if (error.isJoi) {
@@ -61,28 +63,40 @@ export const getAllPropertyAd = async (
   try {
     if (req.query.type) {
       const { type } = req.query;
-      const result = await pool.query(
-        `SELECT users.id as ownerID,status,type,state,city,property.address,price,created_on,image_url,email AS ownerEmail,phonenumber AS ownerNumber FROM users JOIN property ON users.id=owner WHERE type=$1`,
-        [type]
-      );
-      return res.status(200).json({
-        status: "success",
-        data: result.rows,
+      const result: any = await propertyQueries.getAll(type);
+      if (result.error) {
+        return res.status(result.error.status).json({
+          status: result.error.status,
+          error: result.error.message,
+        });
+      }
+      return res.status(SUCCESS_CODE).json({
+        status: SUCCESS_CODE,
+        data: result.rows[0],
       });
     }
 
-    const result = await pool.query(
-      `SELECT users.id as ownerID,status,type,state,city,property.address,price,created_on,image_url,email AS ownerEmail,phonenumber AS ownerNumber FROM users JOIN property ON users.id=owner`
-    );
-    return res.status(200).json({
-      status: "success",
-      data: result.rows,
+    const resp: any = await propertyQueries.getAll();
+
+    if (resp.error) {
+      return res.status(resp.error.status).json({
+        status: resp.error.status,
+        error: resp.error.message,
+      });
+    }
+
+    return res.status(SUCCESS_CODE).json({
+      status: SUCCESS_CODE,
+      result: resp.rows,
     });
   } catch (error: any) {
-    return res.status(500).send({
-      status: "error",
-      message: "internal server error",
-    });
+    if (error.isJoi) {
+      return res.status(400).send({
+        status: "error",
+        message: error.details[0].message,
+      });
+    }
+    next(error);
   }
 };
 
@@ -93,18 +107,22 @@ export const viewSpecificAdvert = async (
 ) => {
   try {
     const { id } = req.params;
-    const result = await pool.query(
-      `SELECT users.id as ownerID,status,type,state,city,property.address,price,created_on,image_url,email AS ownerEmail,phonenumber AS ownerNumber FROM users JOIN property ON users.id=owner WHERE property.id=$1`,
-      [id]
-    );
-    if (!result.rows.length) {
-      return res.status(400).send({
-        status: "error",
-        message: `ID of ${id} does not exist`,
+    const result: any = await propertyQueries.viewOne(id);
+    if (result.error) {
+      return res.status(result.error.status).json({
+        status: result.error.status,
+        error: result.error.message,
       });
     }
-    return res.status(200).json({
-      status: "success",
+    if (!result.rows.length) {
+      return res.status(FORBIDDEN_CODE).json({
+        status: FORBIDDEN_CODE,
+        message: "The ressource you are trying to view is unavailable",
+      });
+    }
+
+    return res.status(SUCCESS_CODE).json({
+      status: SUCCESS_CODE,
       data: result.rows[0],
     });
   } catch (error) {
@@ -124,25 +142,25 @@ export const deletePropertyAd = async (
     const { id } = await req.user;
     const { propertyid } = req.params;
 
-    const getProperties = await pool.query(
-      `DELETE FROM property WHERE id=$1 AND owner=$2`,
-      [propertyid, id]
-    );
+    const result: any = await propertyQueries.delete(id, propertyid);
 
-    if (getProperties.rowCount === 1) {
-      return res.status(200).send({
-        status: "success",
-        message: "Property Deleted",
+    if (result.error) {
+      return res.status(result.error.status).json({
+        status: result.error.status,
+        error: result.error.message,
       });
     }
-    if (getProperties.rowCount === 0) {
-      return res.status(400).send({
-        status: "error",
-        error: "Property not found. Property may have been removed",
+    if (result.rowCount === 0) {
+      return res.status(FORBIDDEN_CODE).json({
+        status: FORBIDDEN_CODE,
+        message: "The property you are trying to delete is unavailable",
       });
     }
+    return res.status(SUCCESS_CODE).json({
+      status: SUCCESS_CODE,
+      message: "property removed",
+    });
   } catch (error) {
-    console.log(error);
     return res.status(500).send({
       status: "error",
       message: "internal server error",
@@ -157,25 +175,25 @@ export const markPropertyAsSold = async (
 ) => {
   try {
     const { id } = await req.user;
-    console.log(id);
-
     const { propertyid } = req.params;
-    const updateResult = await pool.query(
-      `UPDATE property SET status=$1 WHERE owner=$2 AND id=$3`,
-      ["sold", id, propertyid]
-    );
-    if (updateResult.rowCount === 1) {
-      return res.status(200).send({
-        status: "success",
-        message: "Property Sold",
+    const result: any = await propertyQueries.sold(id, propertyid);
+    if (result.error) {
+      return res.status(result.error.status).json({
+        status: result.error.status,
+        error: result.error.message,
       });
     }
-    return res.status(400).send({
-      status: "error",
-      error: `You have no property advert with ID ${propertyid}. Input a correct property ID and try again`,
+    if (result.rowCount === 0) {
+      return res.status(FORBIDDEN_CODE).json({
+        status: FORBIDDEN_CODE,
+        message: "The property you are trying to update is unavailable",
+      });
+    }
+    return res.status(SUCCESS_CODE).json({
+      status: SUCCESS_CODE,
+      message: "property updated",
     });
   } catch (error) {
-    console.log(error);
     return res.status(500).send({
       status: "error",
       message: "internal server error",
@@ -186,30 +204,25 @@ export const markPropertyAsSold = async (
 export const updateAd = async (req: any, res: Response, next: NextFunction) => {
   try {
     const { id } = await req.user;
-    console.log(id);
 
     const { propertyid } = req.params;
     let cloudRes;
 
-    const properties = await pool.query(
-      `SELECT * FROM property WHERE id=$1 AND owner=$2`,
-      [propertyid, id]
-    );
-    if (!properties.rows.length) {
-      return res.status(400).send({
-        status: "error",
-        error: `You have no property advert with ID ${propertyid}. Input a correct property ID and try again`,
+    const checker: any = await propertyQueries.cursor(propertyid);
+    if (!checker.rows.length) {
+      return res.status(404).json({
+        status: 404,
+        error: "Property could not be found",
       });
     }
 
-    let { price, state, city, address, type, image_url } = properties.rows[0];
-    if (req.file?.path) {
-      cloudRes = await cloudinary.uploader.upload(req.file?.path);
-    }
+    if (checker.rows[0].owner === id) {
+      let { price, state, city, address, type, image_url } = checker.rows[0];
+      if (req.file?.path) {
+        cloudRes = await cloudinary.uploader.upload(req.file?.path);
+      }
 
-    const updateResult = await pool.query(
-      `UPDATE property SET price=$1, state=$2, city=$3, address=$4, type=$5, image_url=$6 WHERE id=$7 AND owner=$8`,
-      [
+      const values = [
         req.body.price || price,
         req.body.state || state,
         req.body.city || city,
@@ -218,17 +231,25 @@ export const updateAd = async (req: any, res: Response, next: NextFunction) => {
         cloudRes.url || image_url,
         propertyid,
         id,
-      ]
-    );
+      ];
 
-    if (updateResult.rowCount === 1) {
-      return res.status(200).send({
-        status: "success",
-        message: "Property Updated",
+      const result: any = await propertyQueries.update(values);
+      if (result.rowCount > 0) {
+        return res.status(SUCCESS_CODE).json({
+          status: SUCCESS_CODE,
+          message: "Property edited",
+        });
+      }
+      return res.status(404).json({
+        status: 404,
+        error: "Could not proceed, not found",
       });
     }
+    return res.status(403).json({
+      status: 403,
+      error: "Only the owner of this resources can perform this action",
+    });
   } catch (error) {
-    console.log(error);
     return res.status(500).send({
       status: "error",
       message: "internal server error",
